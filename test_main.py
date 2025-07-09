@@ -1,5 +1,5 @@
 from fastapi.testclient import TestClient
-from .main import app # Убедитесь, что это правильный импорт для вашего main.py
+from main import app
 
 client = TestClient(app)
 
