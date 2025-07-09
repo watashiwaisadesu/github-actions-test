@@ -1,12 +1,12 @@
-name: Deploy FastAPI App
+name: Deploy FastAPI App via SSH
 
 on:
   push:
     branches:
-      - master # This workflow runs when you push to the 'main' branch
+      - master # This workflow runs when you push to the 'master' branch
 
 jobs:
-  build-and-run:
+  deploy:
     runs-on: ubuntu-latest # Use the latest Ubuntu runner
 
     steps:
@@ -16,22 +16,69 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.9' # Specify the Python version you want to use
+        # Use Python 3.10.12 if that's what's on your server.
+        # Ubuntu 24.04 usually comes with Python 3.12, so double-check with `python3 --version` on server.
+        python-version: '3.10.12'
 
-    - name: Install dependencies
+    - name: Install dependencies (on GitHub Actions runner - not strictly needed for direct SSH deploy)
+      # This step runs on the GitHub Actions runner, not your remote server.
+      # It's generally good practice for building/testing artifacts, but not for direct SSH.
+      # For direct SSH, dependencies are installed on the remote server.
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
+        echo "Dependencies installed on GitHub Actions runner (if needed for build steps)."
 
-    - name: Run FastAPI application (for demonstration)
-      # In a real scenario, this would be a deployment step
-      # to a hosting provider. Here, it just shows it can start.
-      run: |
-        echo "Attempting to run FastAPI app with Uvicorn..."
-        uvicorn main:app --host 0.0.0.0 --port 8000 &
-        echo "FastAPI app started (in background). Check logs for Uvicorn output."
-        # Give Uvicorn a moment to start up
-        sleep 5
-        # You could add a curl command here to test the endpoint if accessible
-        # For example: curl http://localhost:8000/
-        echo "Workflow finished. For a real deployment, integrate with a cloud provider."
+
+    - name: Deploy to Remote Server
+      uses: appleboy/ssh-action@v1.0.0 # Use the SSH action
+      with:
+        host: ${{ secrets.SERVER_IP }}        # Your server's IP address (store as a GitHub Secret)
+        username: ${{ secrets.SERVER_USERNAME }} # Your SSH username on the server (store as a GitHub Secret)
+        key: ${{ secrets.SSH_PRIVATE_KEY }}    # The private key you stored as a secret
+        port: 61131                            # Your custom SSH port
+        script: |
+          # Define your application's target directory on the server
+          # This now matches your specified directory: ~/server_files/test_repos/github-actions-test
+          APP_DIR="/home/${{ secrets.SERVER_USERNAME }}/server_files/test_repos/github-actions-test"
+          REPO_URL="https://github.com/${{ github.repository }}.git" # Automatically gets your repo URL
+
+          echo "Attempting to deploy to $APP_DIR"
+
+          # Check if the .git directory exists inside the app directory.
+          # If it doesn't, it means the repo hasn't been cloned yet.
+          if [ ! -d "$APP_DIR/.git" ]; then
+            echo "Application directory not found or not a Git repo. Cloning '$REPO_URL' into '$APP_DIR'..."
+            mkdir -p "$APP_DIR" # Ensure the parent directory exists if needed
+            git clone "$REPO_URL" "$APP_DIR"
+            cd "$APP_DIR"
+          else
+            echo "Application directory found. Pulling latest changes for branch 'master'..."
+            cd "$APP_DIR"
+            # Ensure you're on the correct branch before pulling
+            git checkout master
+            git pull origin master # Pull from 'master' branch
+          fi
+
+          echo "Deployment directory: $(pwd)"
+
+          # Check if Uvicorn is already running on port 8003 and kill it
+          if sudo lsof -i :8006 -t; then
+            echo "Killing existing process on port 8006..."
+            sudo lsof -i :8006 -t | xargs sudo kill -9
+            echo "Process killed."
+          else
+            echo "No process found on port 8006."
+          fi
+
+          # Install/Re-install dependencies on the server in venv
+          if [ ! -d "venv" ]; then python3 -m venv venv; fi
+          source venv/bin/activate
+          pip install -r requirements.txt
+
+          # Start Uvicorn in the background using nohup
+          # If using a virtual environment, activate it before this command:
+          # source venv/bin/activate
+          echo "Starting FastAPI app with Uvicorn on port 8003..."
+          nohup uvicorn main:app --host 0.0.0.0 --port 8006 > app.log 2>&1 &
+          echo "FastAPI app started in background. Check app.log for output."
