@@ -3,7 +3,7 @@ name: Deploy FastAPI App
 on:
   push:
     branches:
-      - main # This workflow runs when you push to the 'main' branch
+      - master # This workflow runs when you push to the 'main' branch
 
 jobs:
   build-and-run:
