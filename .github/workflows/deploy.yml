@@ -1,4 +1,4 @@
-name: Deploy FastAPI App via SSH
+name: CI/CD FastAPI App
 
 on:
   push:
@@ -6,7 +6,8 @@ on:
       - master # This workflow runs when you push to the 'master' branch
 
 jobs:
-  deploy:
+  # --- Job 1: Linting ---
+  lint:
     runs-on: ubuntu-latest # Use the latest Ubuntu runner
 
     steps:
@@ -16,19 +17,57 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        # Use Python 3.10.12 if that's what's on your server.
-        # Ubuntu 24.04 usually comes with Python 3.12, so double-check with `python3 --version` on server.
-        python-version: '3.10.12'
+        python-version: '3.10.12' # Specify the Python version for linting
 
-    - name: Install dependencies (on GitHub Actions runner - not strictly needed for direct SSH deploy)
-      # This step runs on the GitHub Actions runner, not your remote server.
-      # It's generally good practice for building/testing artifacts, but not for direct SSH.
-      # For direct SSH, dependencies are installed on the remote server.
+    - name: Install dependencies for Linting
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        echo "Dependencies installed on GitHub Actions runner (if needed for build steps)."
+        pip install -r requirements.txt # Install all dependencies including flake8
+        echo "Dependencies installed on GitHub Actions runner for linting."
 
+    - name: Run Linter (Flake8)
+      run: |
+        echo "Running Flake8 linter..."
+        # Exclude venv and common build artifacts
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=venv,.git,__pycache__
+
+  # --- Job 2: Testing ---
+  test:
+    runs-on: ubuntu-latest # Use the latest Ubuntu runner
+    needs: lint # This job depends on the 'lint' job. It will only run if 'lint' succeeds.
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4 # Action to check out your repository code
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10.12' # Specify the Python version for testing
+
+    - name: Install dependencies for Testing
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt # Install all dependencies including pytest and httpx
+        echo "Dependencies installed on GitHub Actions runner for testing."
+
+    - name: Run Tests (Pytest)
+      run: |
+        echo "Running Pytest..."
+        pytest # Runs all tests found by Pytest
+
+  # --- Job 3: Deployment ---
+  deploy:
+    runs-on: ubuntu-latest # Use the latest Ubuntu runner
+    needs: [lint, test] # This job depends on both 'lint' and 'test' jobs. It will only run if BOTH succeed.
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4 # Action to check out your repository code
+      # Note: Python setup and dependency install on the runner are not strictly
+      # necessary here for direct SSH deployment, as they are handled on the remote server.
+      # However, if you had any build artifacts to prepare on the runner before sending,
+      # you would include those steps here.
 
     - name: Deploy to Remote Server
       uses: appleboy/ssh-action@v1.0.0 # Use the SSH action
@@ -39,7 +78,6 @@ jobs:
         port: 61131                            # Your custom SSH port
         script: |
           # Define your application's target directory on the server
-          # This now matches your specified directory: ~/server_files/test_repos/github-actions-test
           APP_DIR="/home/${{ secrets.SERVER_USERNAME }}/server_files/test_repos/github-actions-test"
           REPO_URL="https://github.com/${{ github.repository }}.git" # Automatically gets your repo URL
 
@@ -62,7 +100,7 @@ jobs:
 
           echo "Deployment directory: $(pwd)"
 
-          # Check if Uvicorn is already running on port 8003 and kill it
+          # Check if Uvicorn is already running on port 8006 and kill it
           if sudo lsof -i :8006 -t; then
             echo "Killing existing process on port 8006..."
             sudo lsof -i :8006 -t | xargs sudo kill -9
@@ -71,14 +109,18 @@ jobs:
             echo "No process found on port 8006."
           fi
 
-          # Install/Re-install dependencies on the server in venv
-          if [ ! -d "venv" ]; then python3 -m venv venv; fi
-          source venv/bin/activate
+          # Install/Re-install dependencies on the server in a virtual environment
+          echo "Setting up virtual environment and installing/updating dependencies on server..."
+          if [ ! -d "venv" ]; then
+            python3 -m venv venv
+            echo "Virtual environment 'venv' created."
+          fi
+          source venv/bin/activate # Activate the virtual environment
           pip install -r requirements.txt
+          echo "Dependencies installed in virtual environment."
 
           # Start Uvicorn in the background using nohup
-          # If using a virtual environment, activate it before this command:
-          # source venv/bin/activate
-          echo "Starting FastAPI app with Uvicorn on port 8003..."
+          # The virtual environment is already activated by 'source venv/bin/activate'
+          echo "Starting FastAPI app with Uvicorn on port 8006..."
           nohup uvicorn main:app --host 0.0.0.0 --port 8006 > app.log 2>&1 &
           echo "FastAPI app started in background. Check app.log for output."
